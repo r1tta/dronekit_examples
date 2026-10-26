@@ -1,0 +1,219 @@
+import collections
+import collections.abc
+
+collections.MutableMapping = collections.abc.MutableMapping
+
+import threading
+import tkinter as tk
+from tkinter import messagebox
+from dronekit import VehicleMode, connect
+
+
+class GCSStationMerged:
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("GCS Station Control Panel")
+        self.root.geometry("400x620")
+
+        self.vehicle = None
+        self.connection_string = "127.0.0.1:14550"
+
+        self.lbl_current = tk.Label(
+            root,
+            text=f"Current Target: {self.connection_string}",
+            fg="blue",
+            font=("Arial", 10, "bold"),
+        )
+        self.lbl_current.pack(pady=5)
+
+        self.btn_settings = tk.Button(
+            root,
+            text="Change Connection...",
+            bg="lightyellow",
+            width=25,
+            command=self.open_settings_window,
+        )
+        self.btn_settings.pack(pady=5)
+
+        self.btn_connect = tk.Button(
+            root,
+            text="Connect",
+            bg="pink",
+            width=20,
+            command=self.connect_drone,
+        )
+        self.btn_connect.pack(pady=7)
+
+        self.btn_disconnect = tk.Button(
+            root,
+            text="Disconnect",
+            bg="#7393B3",
+            fg="white",
+            width=20,
+            state=tk.DISABLED,
+            command=self.disconnect_drone,
+        )
+        self.btn_disconnect.pack(pady=7)
+
+        tk.Label(root, text="-- Flight Modes --", fg="gray").pack(pady=7)
+
+        self.mode_buttons = {}
+        modes = ["GUIDED", "STABILIZE", "LOITER", "LAND", "RTL"]
+        for mode in modes:
+            btn = tk.Button(
+                root,
+                text=mode,
+                width=20,
+                state=tk.DISABLED,
+                command=lambda m=mode: self.set_mode(m),
+            )
+            btn.pack(pady=2)
+            self.mode_buttons[mode] = btn
+
+        self.btn_arm = tk.Button(
+            root,
+            text="Arm",
+            bg="purple",
+            fg="white",
+            width=20,
+            state=tk.DISABLED,
+            command=lambda: self.set_arm(True),
+        )
+        self.btn_arm.pack(pady=5)
+
+        self.btn_disarm = tk.Button(
+            root,
+            text="Disarm",
+            bg="gray",
+            fg="white",
+            width=20,
+            state=tk.DISABLED,
+            command=lambda: self.set_arm(False),
+        )
+        self.btn_disarm.pack(pady=5)
+
+        self.btn_close = tk.Button(
+            root,
+            text="Close Application",
+            bg="tomato",
+            fg="white",
+            width=20,
+            command=self.close_application,
+        )
+        self.btn_close.pack(pady=10)
+
+    def open_settings_window(self):
+        settings_win = tk.Toplevel(self.root)
+        settings_win.title("Connection Settings")
+        settings_win.geometry("320x160")
+        settings_win.grab_set()
+
+        tk.Label(
+            settings_win, text="Enter Connection String:", font=("Arial", 10)
+        ).pack(pady=10)
+
+        entry_new_conn = tk.Entry(settings_win, width=30)
+        entry_new_conn.insert(0, self.connection_string)
+        entry_new_conn.pack(pady=5)
+
+        def save_connection():
+            nonlocal entry_new_conn
+            new_val = entry_new_conn.get().strip()
+            if new_val:
+                self.connection_string = new_val
+                self.lbl_current.config(
+                    text=f"Current Target: {self.connection_string}"
+                )
+                messagebox.showinfo(
+                    "Updated",
+                    f"Connection string updated to: {self.connection_string}",
+                    parent=settings_win,
+                )
+                settings_win.destroy()
+            else:
+                messagebox.showerror(
+                    "Error", "Connection string cannot be empty", parent=settings_win
+                )
+
+        btn_save = tk.Button(
+            settings_win,
+            text="Save",
+            bg="lightgreen",
+            width=15,
+            command=save_connection,
+        )
+        btn_save.pack(pady=10)
+
+    def connect_drone(self):
+        try:
+            messagebox.showinfo(
+                "Status", f"Connecting to {self.connection_string}..."
+            )
+            threading.Thread(
+                target=self._threaded_connect,
+                args=(self.connection_string,),
+                daemon=True,
+            ).start()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def _threaded_connect(self, conn_str):
+        try:
+            self.vehicle = connect(conn_str, wait_ready=True, timeout=60)
+            self.root.after(0, self.update_ui_connected)
+        except Exception as e:
+            self.root.after(
+                0, lambda: messagebox.showerror("Connection Failed", str(e))
+            )
+
+    def update_ui_connected(self):
+        self.btn_connect.config(state=tk.DISABLED)
+        self.btn_settings.config(state=tk.DISABLED)
+        self.btn_disconnect.config(state=tk.NORMAL)
+        self.btn_arm.config(state=tk.NORMAL)
+        self.btn_disarm.config(state=tk.NORMAL)
+        for btn in self.mode_buttons.values():
+            btn.config(state=tk.NORMAL)
+        messagebox.showinfo("Status", "Successfully connected to Drone!")
+
+    def disconnect_drone(self):
+        if self.vehicle:
+            self.vehicle.close()
+            self.vehicle = None
+        self.btn_connect.config(state=tk.NORMAL)
+        self.btn_settings.config(state=tk.NORMAL)
+        self.btn_disconnect.config(state=tk.DISABLED)
+        self.btn_arm.config(state=tk.DISABLED)
+        self.btn_disarm.config(state=tk.DISABLED)
+        for btn in self.mode_buttons.values():
+            btn.config(state=tk.DISABLED)
+        messagebox.showinfo("Status", "Connection closed.")
+
+    def set_mode(self, mode):
+        if self.vehicle:
+            try:
+                self.vehicle.mode = VehicleMode(mode)
+                messagebox.showinfo("Status", f"Mode changed to {mode}")
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def set_arm(self, arm_state):
+        if self.vehicle:
+            try:
+                self.vehicle.armed = arm_state
+                status_text = "armed" if arm_state else "disarmed"
+                messagebox.showwarning("Status", f"Drone {status_text} successfully!")
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def close_application(self):
+        if self.vehicle:
+            self.vehicle.close()
+        self.root.destroy()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = GCSStationMerged(root)
+    root.mainloop()
