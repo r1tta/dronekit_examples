@@ -1,0 +1,391 @@
+import collections
+import collections.abc
+import time
+import threading
+import tkinter as tk
+from tkinter import messagebox
+import tkintermapview
+from dronekit import VehicleMode, connect
+
+collections.MutableMapping = collections.abc.MutableMapping
+
+
+class GCSStationMerged:
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("GCS Station Control Panel")
+        self.root.geometry("420x860")
+
+        self.vehicle = None
+        self.connection_string = "127.0.0.1:14550"
+        self.rc_vals = {1: 1500, 2: 1500, 3: 1000, 4: 1500}
+
+        self.lbl_current = tk.Label(
+            root,
+            text=f"Current Target: {self.connection_string}",
+            fg="blue",
+            font=("Arial", 10, "bold"),
+        )
+        self.lbl_current.pack(pady=3)
+
+        f_status = tk.LabelFrame(root, text="Status & Telemetry", padx=5, pady=5)
+        f_status.pack(fill="x", padx=10, pady=3)
+
+        self.conn_lbl = tk.Label(f_status, text="Connection: Disconnected", fg="red")
+        self.conn_lbl.pack(anchor="w")
+        self.mode_lbl = tk.Label(f_status, text="Mode: N/A")
+        self.mode_lbl.pack(anchor="w")
+        self.arm_lbl = tk.Label(f_status, text="Armed: False")
+        self.arm_lbl.pack(anchor="w")
+        self.alt_lbl = tk.Label(f_status, text="Altitude: 0.0 m")
+        self.alt_lbl.pack(anchor="w")
+
+        rc_box = tk.LabelFrame(root, text="RC Channels (1-4)", padx=5, pady=5)
+        rc_box.pack(fill="x", padx=10, pady=3)
+
+        self.rc_bars = {}
+
+        f1 = tk.Frame(rc_box)
+        f1.pack(fill="x", pady=1)
+        tk.Label(f1, text="Roll (1)", width=12, anchor="w").pack(side="left")
+        c1 = tk.Canvas(f1, width=200, height=15, bg="white")
+        c1.pack(side="left", padx=5)
+        b1 = c1.create_rectangle(0, 0, 100, 15, fill="green")
+        self.rc_bars[1] = (c1, b1)
+
+        f2 = tk.Frame(rc_box)
+        f2.pack(fill="x", pady=1)
+        tk.Label(f2, text="Pitch (2)", width=12, anchor="w").pack(side="left")
+        c2 = tk.Canvas(f2, width=200, height=15, bg="white")
+        c2.pack(side="left", padx=5)
+        b2 = c2.create_rectangle(0, 0, 100, 15, fill="green")
+        self.rc_bars[2] = (c2, b2)
+
+        f3 = tk.Frame(rc_box)
+        f3.pack(fill="x", pady=1)
+        tk.Label(f3, text="Throttle (3)", width=12, anchor="w").pack(side="left")
+        c3 = tk.Canvas(f3, width=200, height=15, bg="white")
+        c3.pack(side="left", padx=5)
+        b3 = c3.create_rectangle(0, 0, 100, 15, fill="green")
+        self.rc_bars[3] = (c3, b3)
+
+        f4 = tk.Frame(rc_box)
+        f4.pack(fill="x", pady=1)
+        tk.Label(f4, text="Yaw (4)", width=12, anchor="w").pack(side="left")
+        c4 = tk.Canvas(f4, width=200, height=15, bg="white")
+        c4.pack(side="left", padx=5)
+        b4 = c4.create_rectangle(0, 0, 100, 15, fill="green")
+        self.rc_bars[4] = (c4, b4)
+
+        map_frame = tk.LabelFrame(root, text="Live Map & Yaw", padx=5, pady=5)
+        map_frame.pack(fill="x", padx=10, pady=3)
+
+        self.map_widget = tkintermapview.TkinterMapView(map_frame, width=390, height=160, corner_radius=0)
+        self.map_widget.pack()
+        self.map_widget.set_position(40.1792, 44.4991)
+        self.map_widget.set_zoom(15)
+        self.drone_marker = self.map_widget.set_marker(40.1792, 44.4991, text="Drone")
+
+        takeoff_frame = tk.Frame(root)
+        takeoff_frame.pack(pady=3)
+        tk.Label(takeoff_frame, text="Altitude (m):").pack(side="left", padx=5)
+        self.entry_alt = tk.Entry(takeoff_frame, width=8)
+        self.entry_alt.insert(0, "10")
+        self.entry_alt.pack(side="left", padx=5)
+
+        self.btn_takeoff = tk.Button(
+            takeoff_frame,
+            text="Takeoff",
+            bg="orange",
+            width=12,
+            state=tk.DISABLED,
+            command=self.execute_takeoff,
+        )
+        self.btn_takeoff.pack(side="left", padx=5)
+
+        btn_ctrl_frame = tk.Frame(root)
+        btn_ctrl_frame.pack(pady=3)
+
+        self.btn_settings = tk.Button(
+            btn_ctrl_frame,
+            text="Change Connection...",
+            bg="lightyellow",
+            width=20,
+            command=self.open_settings_window,
+        )
+        self.btn_settings.grid(row=0, column=0, padx=2, pady=2)
+
+        self.btn_connect = tk.Button(
+            btn_ctrl_frame,
+            text="Connect",
+            bg="pink",
+            width=18,
+            command=self.connect_drone,
+        )
+        self.btn_connect.grid(row=0, column=1, padx=2, pady=2)
+
+        self.btn_disconnect = tk.Button(
+            btn_ctrl_frame,
+            text="Disconnect",
+            bg="#7393B3",
+            fg="white",
+            width=20,
+            state=tk.DISABLED,
+            command=self.disconnect_drone,
+        )
+        self.btn_disconnect.grid(row=1, column=0, padx=2, pady=2)
+
+        self.btn_close = tk.Button(
+            btn_ctrl_frame,
+            text="Close App",
+            bg="tomato",
+            fg="white",
+            width=18,
+            command=self.close_application,
+        )
+        self.btn_close.grid(row=1, column=1, padx=2, pady=2)
+
+        modes_frame = tk.Frame(root)
+        modes_frame.pack(pady=3)
+
+        self.mode_buttons = {}
+        modes = ["GUIDED", "STABILIZE", "LOITER", "LAND", "RTL"]
+        for i, mode in enumerate(modes):
+            btn = tk.Button(
+                modes_frame,
+                text=mode,
+                width=12,
+                state=tk.DISABLED,
+                command=lambda m=mode: self.set_mode(m),
+            )
+            btn.grid(row=i // 3, column=i % 3, padx=2, pady=2)
+            self.mode_buttons[mode] = btn
+
+        arm_frame = tk.Frame(root)
+        arm_frame.pack(pady=3)
+
+        self.btn_arm = tk.Button(
+            arm_frame,
+            text="Arm",
+            bg="purple",
+            fg="white",
+            width=18,
+            state=tk.DISABLED,
+            command=lambda: self.set_arm(True),
+        )
+        self.btn_arm.pack(side="left", padx=5)
+
+        self.btn_disarm = tk.Button(
+            arm_frame,
+            text="Disarm",
+            bg="gray",
+            fg="white",
+            width=18,
+            state=tk.DISABLED,
+            command=lambda: self.set_arm(False),
+        )
+        self.btn_disarm.pack(side="left", padx=5)
+
+        self.root.bind("<KeyPress>", self.on_key_press)
+        self.root.bind("<KeyRelease>", self.on_key_release)
+
+        self.running = True
+        threading.Thread(target=self.telemetry_loop, daemon=True).start()
+
+    def open_settings_window(self):
+        settings_win = tk.Toplevel(self.root)
+        settings_win.title("Connection Settings")
+        settings_win.geometry("320x160")
+        settings_win.grab_set()
+
+        tk.Label(settings_win, text="Enter Connection String:", font=("Arial", 10)).pack(pady=10)
+
+        entry_new_conn = tk.Entry(settings_win, width=30)
+        entry_new_conn.insert(0, self.connection_string)
+        entry_new_conn.pack(pady=5)
+
+        def save_connection():
+            new_val = entry_new_conn.get().strip()
+            if new_val:
+                self.connection_string = new_val
+                self.lbl_current.config(text=f"Current Target: {self.connection_string}")
+                messagebox.showinfo("Updated", f"Connection string updated to: {self.connection_string}", parent=settings_win)
+                settings_win.destroy()
+            else:
+                messagebox.showerror("Error", "Connection string cannot be empty", parent=settings_win)
+
+        btn_save = tk.Button(
+            settings_win,
+            text="Save",
+            bg="lightgreen",
+            width=15,
+            command=save_connection,
+        )
+        btn_save.pack(pady=10)
+
+    def connect_drone(self):
+        try:
+            messagebox.showinfo("Status", f"Connecting to {self.connection_string}...")
+            threading.Thread(
+                target=self._threaded_connect,
+                args=(self.connection_string,),
+                daemon=True,
+            ).start()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def _threaded_connect(self, conn_str):
+        try:
+            self.vehicle = connect(conn_str, wait_ready=True, timeout=60)
+            self.root.after(0, self.update_ui_connected)
+        except Exception as e:
+            self.root.after(
+                0, lambda: messagebox.showerror("Connection Failed", str(e))
+            )
+
+    def update_ui_connected(self):
+        self.btn_connect.config(state=tk.DISABLED)
+        self.btn_settings.config(state=tk.DISABLED)
+        self.btn_disconnect.config(state=tk.NORMAL)
+        self.btn_arm.config(state=tk.NORMAL)
+        self.btn_disarm.config(state=tk.NORMAL)
+        self.btn_takeoff.config(state=tk.NORMAL)
+        for btn in self.mode_buttons.values():
+            btn.config(state=tk.NORMAL)
+        messagebox.showinfo("Status", "Successfully connected to Drone!")
+
+    def disconnect_drone(self):
+        if self.vehicle:
+            self.vehicle.close()
+            self.vehicle = None
+        self.btn_connect.config(state=tk.NORMAL)
+        self.btn_settings.config(state=tk.NORMAL)
+        self.btn_disconnect.config(state=tk.DISABLED)
+        self.btn_arm.config(state=tk.DISABLED)
+        self.btn_disarm.config(state=tk.DISABLED)
+        self.btn_takeoff.config(state=tk.DISABLED)
+        for btn in self.mode_buttons.values():
+            btn.config(state=tk.DISABLED)
+        messagebox.showinfo("Status", "Connection closed.")
+
+    def set_mode(self, mode):
+        if self.vehicle:
+            try:
+                self.vehicle.mode = VehicleMode(mode)
+                messagebox.showinfo("Status", f"Mode changed to {mode}")
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def set_arm(self, arm_state):
+        if self.vehicle:
+            try:
+                self.vehicle.armed = arm_state
+                status_text = "armed" if arm_state else "disarmed"
+                messagebox.showwarning("Status", f"Drone {status_text} successfully!")
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def execute_takeoff(self):
+        if self.vehicle:
+            try:
+                alt = float(self.entry_alt.get())
+                self.vehicle.mode = VehicleMode("GUIDED")
+                self.vehicle.armed = True
+                self.vehicle.simple_takeoff(alt)
+                messagebox.showinfo("Status", f"Takeoff initiated to {alt} meters")
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def on_key_press(self, event):
+        if not self.vehicle:
+            return
+        key = event.keysym.lower()
+        changed = False
+        if key == "w":
+            self.rc_vals[3] = min(2000, self.rc_vals[3] + 20)
+            changed = True
+        elif key == "s":
+            self.rc_vals[3] = max(1000, self.rc_vals[3] - 20)
+            changed = True
+        elif key == "a":
+            self.rc_vals[4] = max(1000, self.rc_vals[4] - 20)
+            changed = True
+        elif key == "d":
+            self.rc_vals[4] = min(2000, self.rc_vals[4] + 20)
+            changed = True
+        elif event.keysym == "Left":
+            self.rc_vals[1] = max(1000, self.rc_vals[1] - 20)
+            changed = True
+        elif event.keysym == "Right":
+            self.rc_vals[1] = min(2000, self.rc_vals[1] + 20)
+            changed = True
+        elif event.keysym == "Up":
+            self.rc_vals[2] = max(1000, self.rc_vals[2] - 20)
+            changed = True
+        elif event.keysym == "Down":
+            self.rc_vals[2] = min(2000, self.rc_vals[2] + 20)
+            changed = True
+
+        if changed:
+            for ch, val in self.rc_vals.items():
+                self.vehicle.channels.overrides[str(ch)] = val
+
+    def on_key_release(self, event):
+        if not self.vehicle:
+            return
+        key = event.keysym.lower()
+        if key in ["a", "d"]:
+            self.rc_vals[4] = 1500
+            self.vehicle.channels.overrides["4"] = 1500
+        elif event.keysym in ["Left", "Right"]:
+            self.rc_vals[1] = 1500
+            self.vehicle.channels.overrides["1"] = 1500
+        elif event.keysym in ["Up", "Down"]:
+            self.rc_vals[2] = 1500
+            self.vehicle.channels.overrides["2"] = 1500
+
+    def update_rc_display(self):
+        for ch, (canvas, bar) in self.rc_bars.items():
+            val = self.rc_vals[ch]
+            ratio = (val - 1000) / 1000.0
+            x1 = ratio * 200
+            canvas.coords(bar, 0, 0, x1, 15)
+
+    def telemetry_loop(self):
+        while self.running:
+            if self.vehicle:
+                try:
+                    m = self.vehicle.mode.name
+                    a = self.vehicle.armed
+                    alt = self.vehicle.location.global_relative_frame.alt
+                    lat = self.vehicle.location.global_frame.lat
+                    lon = self.vehicle.location.global_frame.lon
+                    self.root.after(0, lambda mode=m, arm=a, al=alt, la=lat, lo=lon: self.refresh_ui_data(mode, arm, al, la, lo))
+                except:
+                    pass
+            self.root.after(0, self.update_rc_display)
+            time.sleep(0.1)
+
+    def refresh_ui_data(self, mode, armed, alt, lat, lon):
+        self.conn_lbl.config(text="Connection: Connected", fg="green")
+        self.mode_lbl.config(text=f"Mode: {mode}")
+        self.arm_lbl.config(text=f"Armed: {armed}")
+        self.alt_lbl.config(text=f"Altitude: {alt:.2f} m")
+        try:
+            self.drone_marker.set_position(lat, lon)
+            self.map_widget.set_position(lat, lon)
+        except:
+            pass
+
+    def close_application(self):
+        self.running = False
+        if self.vehicle:
+            self.vehicle.close()
+        self.root.destroy()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = GCSStationMerged(root)
+    root.mainloop()
